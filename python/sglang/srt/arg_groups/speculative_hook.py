@@ -361,13 +361,31 @@ def _handle_eagle_family(server_args: "ServerArgs") -> None:
         )
         server_args.speculative_num_draft_tokens = server_args.speculative_num_steps + 1
 
+    # Spec v2 tree drafting (topk > 1) with page_size > 1 lays each topk branch's
+    # draft KV in its own page-aligned region whose first page starts with `last_page`
+    # "hole" slots overlapping the prefix's partial tail page ("holey" layout). The
+    # draft decode builds an explicit kv-index list (generate_draft_decode_kv_indices)
+    # that points every branch at the one shared prefix and lists each branch's own
+    # draft slots, and the prefix tail is duplicated into each branch's holes
+    # (duplicate_prefix_tail_to_draft_branches) so whole-page reads stay coherent.
+    # Together these support the TOKEN-INDEX backends below.
+    # PAGE-INDEX / block-table backends (e.g. flashmla, trtllm_mla, cutlass_mla) read
+    # whole pages by block id and would need a per-branch block table (each branch's
+    # page sequence as block ids) plus a non-shareable partial prefix page -- dup keeps
+    # page contents coherent but does not build that per-branch block table. That is a
+    # separate effort and is not supported here.
+    _TOKEN_INDEX_SPEC_BACKENDS = ("flashinfer", "fa3", "triton")
     if (
         server_args.speculative_eagle_topk > 1
         and server_args.page_size > 1
-        and server_args.attention_backend not in ["flashinfer", "fa3"]
+        and server_args.attention_backend not in _TOKEN_INDEX_SPEC_BACKENDS
     ):
         raise ValueError(
-            "speculative_eagle_topk > 1 with page_size > 1 is unstable and produces incorrect results for paged attention backends. This combination is only supported for the 'flashinfer' backend."
+            f"speculative_eagle_topk > 1 with page_size > 1 is only supported on "
+            f"token-index attention backends {_TOKEN_INDEX_SPEC_BACKENDS}; "
+            f"page-index / block-table backends read whole pages and cannot consume "
+            f"the per-branch holey draft layout. Got attention_backend="
+            f"{server_args.attention_backend!r}. Use page_size == 1 or a token-index backend."
         )
 
 
