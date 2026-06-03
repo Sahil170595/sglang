@@ -83,26 +83,11 @@ def duplicate_prefix_tail_to_draft_branches(
     topk: int,
     page_size: int,
 ) -> None:
-    """Duplicate each request's partial prefix-tail page into every draft branch's holes.
+    """Copy the prefix partial-tail page into each branch's first-page holes (page>1 + topk>1).
 
-    Under page_size>1 + topk>1, every topk branch gets its own page-aligned draft
-    region, so branch b (b>=1) starts with `last_page` "hole" slots that share a page
-    with -- but are physically distinct from -- the prefix's partial tail page. We copy
-    the real prefix-tail KV into those holes (move_kv_cache) so each branch's pages are
-    self-coherent: any whole-page / block read of a branch's first page (the fa3
-    expand-block read, the cuda-graph metadata path) then sees correct prefix KV in the
-    holes instead of stale slots. Run unconditionally rather than betting on every
-    backend/path to mask the holes out. Mirrors V1 eagle_worker's move_kv_cache (#7725).
-
-    Inputs (all derived from the holey out_cache_loc layout, kept as the single source
-    of the geometry formula in the caller):
-      rows:          [bs, pool_len] req_to_token rows for this batch
-      prefix_base:   [bs] page-aligned committed-prefix length (seq_lens - last_page)
-      last_page:     [bs] partial-tail-page slot count (seq_lens % page_size)
-      num_new_pages: [bs] draft pages allocated per topk branch
-
-    Note: torch gather + boolean-mask indexing incurs a host sync per draft step;
-    fuse into a kernel if it shows up on the draft hot path.
+    The draft-decode expand pass reads each branch's own draft page by block id
+    (cache_loc // page_size), so branch b>=1's hole slots [0, last_page) must hold the
+    real prefix tail (branch 0's first page already is it). Mirrors V1 #7725.
     """
     if topk <= 1:
         return
