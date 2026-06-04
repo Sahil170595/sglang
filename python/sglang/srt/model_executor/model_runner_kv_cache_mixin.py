@@ -298,6 +298,26 @@ class ModelRunnerKVCacheMixin:
             if max_spec_draft_tokens is not None:
                 extra_max_context_len += max_spec_draft_tokens
 
+            # Spec v2 tree drafting (topk > 1 + page_size > 1) over-allocates a
+            # page-aligned per-branch draft region of 2 * get_alloc_len_per_decode
+            # (the holey footprint topk * num_new_pages * page) contiguously into
+            # req_to_token. That footprint scales with topk * page and far exceeds
+            # num_draft_tokens, so the req_to_token row must be widened to hold it;
+            # otherwise the over-allocated range overflows the row -> release_kv_cache
+            # silently clamps the free (leaking KV slots) and the holey gather can
+            # index out of bounds.
+            if (
+                self.server_args.speculative_algorithm is not None
+                and self.server_args.page_size > 1
+                and (self.server_args.speculative_eagle_topk or 1) > 1
+            ):
+                from sglang.srt.managers.utils import get_alloc_len_per_decode
+
+                extra_max_context_len = max(
+                    extra_max_context_len,
+                    2 * get_alloc_len_per_decode(self.server_args),
+                )
+
             if self.server_args.disaggregation_mode == "decode":
                 from sglang.srt.disaggregation.decode import (
                     DecodeReqToTokenPool,
